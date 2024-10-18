@@ -1,25 +1,31 @@
-import time
-import pandas as pd
-from googleapiclient.http import MediaFileUpload
-
 import config
 from pymongo import MongoClient
-import re
-from bson.objectid import ObjectId
-import requests
 import certifi
-
-# Configurer le résolveur DNS
 import dns.resolver
+import requests
+import json
+import time
+import gzip
+import shutil
+import os
+import pandas as pd
+import os.path
+import base64
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
 dns.resolver.default_resolver.nameservers = ['8.8.8.8']
-from datetime import datetime
-# Connexion à la base de données MongoDB
+
 client = MongoClient(f'mongodb+srv://{config.mongo_pat}', tlsCAFile=certifi.where())
 db = client['legacy-api-management']
 col_soc = db["societies"]
 col_user = db["users"]
-
 
 def get_all():
     result = col_soc.aggregate([
@@ -391,7 +397,6 @@ def signal_one():
 
     response = requests.post(url, json=payload, headers=headers)
 
-
 def signal_unsub() :
     import requests
     import pandas as pd
@@ -408,16 +413,6 @@ def signal_unsub() :
         response = requests.delete(url, headers=headers)
 
     #
-
-
-import requests
-import json
-import time
-import gzip
-import shutil
-import os
-import pandas as pd
-
 
 def export():
     # Step 1: Trigger the export
@@ -505,6 +500,73 @@ def export():
     # Sauvegarder le DataFrame df1 après avoir splité les tags
 
     df.to_csv("/Users/patrick/PycharmProjects/one/csv/results/onesig_tags_splited.csv", index=False)
+
+def envoi_email(status,error):
+    SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly']
+
+    sender_email = 'ope@supertripper.com'
+    sender_name = 'Supertripper Reports'
+    recipient_email = "ope@supertripper.com"
+    subject = f'CRON "One Signal" {status}'
+
+    # Construction du corps de l'e-mail
+    body = (
+        f'{error}'
+    )
+    creds_file = 'creds/cred_gmail.json'
+    token_file = 'token.json'
+    def authenticate_gmail():
+        """Authentifie l'utilisateur via OAuth 2.0 et retourne les credentials"""
+        creds = None
+        # Le token est stocké localement après la première authentification
+        if os.path.exists(token_file):
+            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+        # Si le token n'existe pas ou est expiré, on initie un nouveau flux OAuth
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES)
+                creds = flow.run_local_server(port=0)
+            # Enregistrer le token pour des sessions futures
+            with open(token_file, 'w') as token:
+                token.write(creds.to_json())
+        return creds
+
+    def create_message_with_attachment(sender, sender_name, to, subject, message_text):
+        """Crée un e-mail avec une pièce jointe et un champ Cc"""
+        message = MIMEMultipart()
+        message['to'] = to
+        message['from'] = f'{sender_name} <{sender}>'
+        message['subject'] = subject
+
+        # Attacher le corps du texte
+        message.attach(MIMEText(message_text, 'plain'))
+
+        # Encoder le message en base64 pour l'envoi via l'API Gmail
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        return {'raw': raw_message}
+
+    def send_email(service, user_id, message):
+        """Envoie un e-mail via l'API Gmail"""
+        try:
+            message = service.users().messages().send(userId=user_id, body=message).execute()
+            print(f"Message Id: {message['id']}")
+            return message
+        except HttpError as error:
+            print(f'An error occurred: {error}')
+            return None
+
+    # Authentifier l'utilisateur et créer un service Gmail
+    creds = authenticate_gmail()
+    service = build('gmail', 'v1', credentials=creds)
+
+    # Créer le message avec pièce jointe et copie
+    message = create_message_with_attachment(sender_email, sender_name, recipient_email, subject, body)
+
+    # Envoyer l'e-mail
+    send_email(service, 'me', message)
+    print("Mail envoyé pour vérif ")
 
 
 
